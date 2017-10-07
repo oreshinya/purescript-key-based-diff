@@ -1,0 +1,27 @@
+{
+  "name": "purescript-key-based-diff",
+  "license": "MIT",
+  "homepage": "https://github.com/oreshinya/purescript-key-based-diff",
+  "authors": [
+    "Shinya Takahashi <s.takahashi313@gmail.com>"
+  ],
+  "description": "A list diff algorightm with key for virtual dom reconciliation",
+  "keywords": [
+    "purescript",
+    "diff",
+    "virtual dom"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/oreshinya/purescript-key-based-diff.git"
+  },
+  "moduleType": [
+    "node"
+  ],
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "output"
+  ]
+}
