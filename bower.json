@@ -23,5 +23,8 @@
     "node_modules",
     "bower_components",
     "output"
-  ]
+  ],
+  "dependencies": {
+    "purescript-refs": "^3.0.0"
+  }
 }
