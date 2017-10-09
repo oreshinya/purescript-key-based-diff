@@ -25,6 +25,8 @@
     "output"
   ],
   "dependencies": {
-    "purescript-refs": "^3.0.0"
+    "purescript-eff": "^3.1.0",
+    "purescript-transformers": "^3.4.0",
+    "purescript-maps": "^3.5.2"
   }
 }
