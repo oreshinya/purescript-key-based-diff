@@ -4,8 +4,8 @@ import Prelude
 
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Ref (REF, Ref, modifyRef, newRef, readRef)
-import Data.Array (insertAt, delete)
-import Data.Maybe (fromMaybe)
+import Data.Array ((!!), insertAt, delete)
+import Data.Maybe (Maybe(..), fromMaybe)
 import KeyBasedDiff (Effector, Operation(..), operateDiff)
 import Test.Assert (ASSERT, assert)
 
@@ -31,16 +31,28 @@ main = do
 testList :: forall e. Array Int -> Array Int -> Eff (assert :: ASSERT, ref :: REF | e) Unit
 testList prev next = do
   ref <- newRef prev
-  operateDiff prev next $ operate ref
+  operateDiff prev next $ operate ref prev next
   result <- readRef ref
   assert $ result == next
 
 
 
-operate :: forall e. Ref (Array Int) -> Effector (ref :: REF | e) Int
-operate origin = \operation ->
+operate :: forall e. Ref (Array Int) -> Array Int -> Array Int -> Effector (ref :: REF | e)
+operate origin prev next = \operation ->
   case operation of
-    Create item idx -> modifyRef origin \l -> fromMaybe [] $ insertAt idx item l
-    Update prev next -> pure unit
-    Move prev next idx -> modifyRef origin $ delete prev >>> \l -> fromMaybe [] $ insertAt idx next l
-    Remove item -> modifyRef origin $ delete item
+    Create idx ->
+      case next !! idx of
+        Just item ->
+          modifyRef origin \l -> fromMaybe [] $ insertAt idx item l
+        _ -> pure unit
+
+    Update prevIdx nextIdx ->
+      case prev !! prevIdx, next !! nextIdx of
+        Just prevItem, Just nextItem ->
+          modifyRef origin $ delete prevItem >>> \l -> fromMaybe [] $ insertAt nextIdx nextItem l
+        _, _ -> pure unit
+
+    Remove idx ->
+      case prev !! idx of
+        Just item -> modifyRef origin $ delete item
+        _ -> pure unit

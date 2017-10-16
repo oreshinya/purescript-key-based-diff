@@ -17,28 +17,27 @@ import Data.StrMap (StrMap, insert, lookup, delete, values, empty)
 
 
 
-data Operation a
-  = Create a Int
-  | Update a a
-  | Move a a Int
-  | Remove a
+data Operation
+  = Create Int
+  | Update Int Int
+  | Remove Int
 
-type Effector e a = Operation a -> Eff e Unit
+type Effector e = Operation -> Eff e Unit
 
 type InternalState e a =
   { prev :: Array a
   , next :: Array a
-  , effector :: Effector e a
+  , effector :: Effector e
   , prevStartIdx :: Int
   , prevEndIdx :: Int
   , nextStartIdx :: Int
   , nextEndIdx :: Int
-  , prevKeyValues :: StrMap a
+  , prevKeyIdx :: StrMap Int
   }
 
 
 
-operateDiff :: forall e a. HasKey a => Array a -> Array a -> Effector e a -> Eff e Unit
+operateDiff :: forall e a. HasKey a => Array a -> Array a -> Effector e -> Eff e Unit
 operateDiff prev next effector =
   let state =
         { prev
@@ -48,10 +47,11 @@ operateDiff prev next effector =
         , prevEndIdx : length prev
         , nextStartIdx : 0
         , nextEndIdx : length next
-        , prevKeyValues : empty
+        , prevKeyIdx : empty
         }
    in flip evalStateT state do
       operateStandardBehavior
+      modify initPrevKeyIdx
       operateCreationAndMovement
       operateRemovement
 
@@ -74,22 +74,22 @@ operateStandardBehavior = do
       when (isntFinishedAny state) operateStandardBehavior
 
     Just ps, _, Just ns, _ | isSameKey ps ns -> do
-      liftEff $ state.effector $ Update ps ns
+      liftEff $ state.effector $ Update state.prevStartIdx state.nextStartIdx
       modify $ forwardPrevStart >>> forwardNextStart
       when (isntFinishedAny state) operateStandardBehavior
 
     _, Just pe, _, Just ne | isSameKey pe ne -> do
-      liftEff $ state.effector $ Update pe ne
+      liftEff $ state.effector $ Update state.prevEndIdx state.nextEndIdx
       modify $ backPrevEnd >>> backNextEnd
       when (isntFinishedAny state) operateStandardBehavior
 
     Just ps, _, _, Just ne | isSameKey ps ne -> do
-      liftEff $ state.effector $ Move ps ne state.nextEndIdx
+      liftEff $ state.effector $ Update state.prevStartIdx state.nextEndIdx
       modify $ forwardPrevStart >>> backNextEnd
       when (isntFinishedAny state) operateStandardBehavior
 
     _, Just pe, Just ns, _ | isSameKey pe ns -> do
-      liftEff $ state.effector $ Move pe ns state.nextStartIdx
+      liftEff $ state.effector $ Update state.prevEndIdx state.nextStartIdx
       modify $ backPrevEnd >>> forwardNextStart
       when (isntFinishedAny state) operateStandardBehavior
 
@@ -99,22 +99,21 @@ operateStandardBehavior = do
 
 operateCreationAndMovement :: forall e a. HasKey a => StateT (InternalState e a) (Eff e) Unit
 operateCreationAndMovement = do
-  modify initPrevKeyValues
   state <- get
   nStart <- gets \s -> s.next !! s.nextStartIdx
   case nStart of
     Nothing -> pure unit
     Just ns -> do
-      pStart <- gets \s -> lookup (getKey ns) s.prevKeyValues
-      case pStart of
+      pStartIdx <- gets \s -> lookup (getKey ns) s.prevKeyIdx
+      case pStartIdx of
         Nothing -> do
-          liftEff $ state.effector $ Create ns state.nextStartIdx
+          liftEff $ state.effector $ Create state.nextStartIdx
           modify forwardNextStart
           when (isntFinishedNext state) operateCreationAndMovement
-        Just ps -> do
-          liftEff $ state.effector $ Move ps ns state.nextStartIdx
+        Just idx -> do
+          liftEff $ state.effector $ Update idx state.nextStartIdx
           modify forwardNextStart
-          modify \s -> s { prevKeyValues = delete (getKey ns) s.prevKeyValues }
+          modify \s -> s { prevKeyIdx = delete (getKey ns) s.prevKeyIdx }
           when (isntFinishedNext state) operateCreationAndMovement
 
 
@@ -122,17 +121,17 @@ operateCreationAndMovement = do
 operateRemovement :: forall e a. StateT (InternalState e a) (Eff e) Unit
 operateRemovement = do
   state <- get
-  prevItems <- gets $ _.prevKeyValues >>> values
-  liftEff $ traverse_ (state.effector <<< Remove) prevItems
+  indexes <- gets $ _.prevKeyIdx >>> values
+  liftEff $ traverse_ (state.effector <<< Remove) indexes
 
 
 
-initPrevKeyValues :: forall e a. HasKey a => InternalState e a -> InternalState e a
-initPrevKeyValues state@{ prev, prevStartIdx, prevEndIdx }
+initPrevKeyIdx :: forall e a. HasKey a => InternalState e a -> InternalState e a
+initPrevKeyIdx state@{ prev, prevStartIdx, prevEndIdx }
   | prevStartIdx <= prevEndIdx =
     case prev !! prevStartIdx of
       Nothing -> forwardPrevStart state
-      Just item -> initPrevKeyValues <<< forwardPrevStart $ state { prevKeyValues = insert (getKey item) item state.prevKeyValues}
+      Just item -> initPrevKeyIdx <<< forwardPrevStart $ state { prevKeyIdx = insert (getKey item) prevStartIdx state.prevKeyIdx}
   | otherwise = state
 
 
