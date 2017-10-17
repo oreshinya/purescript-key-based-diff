@@ -4,7 +4,7 @@ import Prelude
 
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Ref (REF, Ref, modifyRef, newRef, readRef)
-import Data.Array ((!!), insertAt, delete)
+import Data.Array ((!!), insertAt, delete, length)
 import Data.Maybe (Maybe(..), fromMaybe)
 import KeyBasedDiff (Effector, Operation(..), operateDiff)
 import Test.Assert (ASSERT, assert)
@@ -19,8 +19,10 @@ main = do
   testList [ 1, 2, 3, 4, 5 ] [ 5, 4, 3, 2, 1 ]
   testList [ 1, 2, 3, 4, 5 ] [ 5, 4, 3, 2, 1, 6 ]
   testList [ 1, 2, 3, 4, 5 ] [ 0, 1, 2, 3, 4, 5 ]
+  testList [ 1, 2, 3, 4, 5 ] [ -1, 0, 1, 2, 3, 4, 5 ]
   testList [ 1, 2, 3, 4, 5 ] [ 1, 2, 3, 4, 5, 6 ]
   testList [ 1, 2, 3, 4, 5 ] [ 1, 2, 3, -1, 4, 5 ]
+  testList [ 1, 2, 3, 4, 5 ] [ 1, 2, 3, -1, 4, -2, -3, 5 ]
   testList [ 1, 2, 3, 4, 5 ] [ 2, 3, 4, 5 ]
   testList [ 1, 2, 3, 4, 5 ] [ 1, 2, 3, 4 ]
   testList [ 1, 2, 3, 4, 5 ] [ 1, 2, 4, 5 ]
@@ -48,8 +50,13 @@ operate origin prev next = \operation ->
 
     Update prevIdx nextIdx ->
       case prev !! prevIdx, next !! nextIdx of
-        Just prevItem, Just nextItem ->
-          modifyRef origin $ delete prevItem >>> \l -> fromMaybe [] $ insertAt nextIdx nextItem l
+        Just prevItem, Just nextItem -> do
+          modifyRef origin $ delete prevItem
+          currentList <- readRef origin
+          if length prev >= length next || nextIdx - prevIdx /= length next - length prev
+            then modifyRef origin \l -> fromMaybe [] $ insertAt nextIdx nextItem l
+            else modifyRef origin \l -> fromMaybe [] $ insertAt (nextIdx - (length next - length prev)) nextItem l
+
         _, _ -> pure unit
 
     Remove idx ->

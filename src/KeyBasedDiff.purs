@@ -12,7 +12,7 @@ import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.State.Trans (StateT, get, gets, modify, evalStateT)
 import Data.Array ((!!), length)
 import Data.Foldable (traverse_)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.StrMap (StrMap, insert, lookup, delete, values, empty)
 
 
@@ -44,9 +44,9 @@ operateDiff prev next effector =
         , next
         , effector
         , prevStartIdx : 0
-        , prevEndIdx : length prev
+        , prevEndIdx : length prev - 1
         , nextStartIdx : 0
-        , nextEndIdx : length next
+        , nextEndIdx : length next - 1
         , prevKeyIdx : empty
         }
    in flip evalStateT state do
@@ -60,61 +60,50 @@ operateDiff prev next effector =
 operateStandardBehavior :: forall e a. HasKey a => StateT (InternalState e a) (Eff e) Unit
 operateStandardBehavior = do
   state <- get
-  pStart <- gets \s -> s.prev !! s.prevStartIdx
-  pEnd <- gets \s -> s.prev !! s.prevEndIdx
-  nStart <- gets \s -> s.next !! s.nextStartIdx
-  nEnd <- gets \s -> s.next !! s.nextEndIdx
-  case pStart, pEnd, nStart, nEnd of
-    Nothing, _, _, _ -> do
-      modify forwardPrevStart
-      when (isntFinishedAny state) operateStandardBehavior
+  when (isntFinishedAny state) do
+    pStart <- gets \s -> s.prev !! s.prevStartIdx
+    pEnd <- gets \s -> s.prev !! s.prevEndIdx
+    nStart <- gets \s -> s.next !! s.nextStartIdx
+    nEnd <- gets \s -> s.next !! s.nextEndIdx
+    case pStart, pEnd, nStart, nEnd of
+      Just ps, _, Just ns, _ | isSameKey ps ns -> do
+        liftEff $ state.effector $ Update state.prevStartIdx state.nextStartIdx
+        modify $ forwardPrevStart >>> forwardNextStart
+        operateStandardBehavior
 
-    _, Nothing, _, _ -> do
-      modify backPrevEnd
-      when (isntFinishedAny state) operateStandardBehavior
+      _, Just pe, _, Just ne | isSameKey pe ne -> do
+        liftEff $ state.effector $ Update state.prevEndIdx state.nextEndIdx
+        modify $ backPrevEnd >>> backNextEnd
+        operateStandardBehavior
 
-    Just ps, _, Just ns, _ | isSameKey ps ns -> do
-      liftEff $ state.effector $ Update state.prevStartIdx state.nextStartIdx
-      modify $ forwardPrevStart >>> forwardNextStart
-      when (isntFinishedAny state) operateStandardBehavior
+      Just ps, _, _, Just ne | isSameKey ps ne -> do
+        liftEff $ state.effector $ Update state.prevStartIdx state.nextEndIdx
+        modify $ forwardPrevStart >>> backNextEnd
+        operateStandardBehavior
 
-    _, Just pe, _, Just ne | isSameKey pe ne -> do
-      liftEff $ state.effector $ Update state.prevEndIdx state.nextEndIdx
-      modify $ backPrevEnd >>> backNextEnd
-      when (isntFinishedAny state) operateStandardBehavior
+      _, Just pe, Just ns, _ | isSameKey pe ns -> do
+        liftEff $ state.effector $ Update state.prevEndIdx state.nextStartIdx
+        modify $ backPrevEnd >>> forwardNextStart
+        operateStandardBehavior
 
-    Just ps, _, _, Just ne | isSameKey ps ne -> do
-      liftEff $ state.effector $ Update state.prevStartIdx state.nextEndIdx
-      modify $ forwardPrevStart >>> backNextEnd
-      when (isntFinishedAny state) operateStandardBehavior
-
-    _, Just pe, Just ns, _ | isSameKey pe ns -> do
-      liftEff $ state.effector $ Update state.prevEndIdx state.nextStartIdx
-      modify $ backPrevEnd >>> forwardNextStart
-      when (isntFinishedAny state) operateStandardBehavior
-
-    _, _, _, _ -> pure unit
+      _, _, _, _ -> pure unit
 
 
 
 operateCreationAndMovement :: forall e a. HasKey a => StateT (InternalState e a) (Eff e) Unit
 operateCreationAndMovement = do
   state <- get
-  nStart <- gets \s -> s.next !! s.nextStartIdx
-  case nStart of
-    Nothing -> pure unit
-    Just ns -> do
-      pStartIdx <- gets \s -> lookup (getKey ns) s.prevKeyIdx
+  when (isntFinishedNext state) do
+    nStart <- gets \s -> s.next !! s.nextStartIdx
+    flip (maybe $ pure unit) nStart \ns -> do
+      pStartIdx <- gets $ _.prevKeyIdx >>> (lookup $ getKey ns)
       case pStartIdx of
-        Nothing -> do
-          liftEff $ state.effector $ Create state.nextStartIdx
-          modify forwardNextStart
-          when (isntFinishedNext state) operateCreationAndMovement
+        Nothing -> liftEff $ state.effector $ Create state.nextStartIdx
         Just idx -> do
           liftEff $ state.effector $ Update idx state.nextStartIdx
-          modify forwardNextStart
           modify \s -> s { prevKeyIdx = delete (getKey ns) s.prevKeyIdx }
-          when (isntFinishedNext state) operateCreationAndMovement
+    modify forwardNextStart
+    operateCreationAndMovement
 
 
 
@@ -127,17 +116,22 @@ operateRemovement = do
 
 
 initPrevKeyIdx :: forall e a. HasKey a => InternalState e a -> InternalState e a
-initPrevKeyIdx state@{ prev, prevStartIdx, prevEndIdx }
-  | prevStartIdx <= prevEndIdx =
-    case prev !! prevStartIdx of
-      Nothing -> forwardPrevStart state
-      Just item -> initPrevKeyIdx <<< forwardPrevStart $ state { prevKeyIdx = insert (getKey item) prevStartIdx state.prevKeyIdx}
+initPrevKeyIdx state
+  | isntFinishedPrev state = initPrevKeyIdx <<< forwardPrevStart $
+    case state.prev !! state.prevStartIdx of
+      Nothing -> state
+      Just item -> state { prevKeyIdx = insert (getKey item) state.prevStartIdx state.prevKeyIdx }
   | otherwise = state
 
 
 
 isntFinishedAny :: forall e a. InternalState e a -> Boolean
-isntFinishedAny state = state.prevStartIdx <= state.prevEndIdx && isntFinishedNext state
+isntFinishedAny state = isntFinishedPrev state && isntFinishedNext state
+
+
+
+isntFinishedPrev :: forall e a. InternalState e a -> Boolean
+isntFinishedPrev state = state.prevStartIdx <= state.prevEndIdx
 
 
 
