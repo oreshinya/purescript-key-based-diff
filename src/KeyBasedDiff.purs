@@ -20,6 +20,8 @@ import Data.StrMap (StrMap, insert, lookup, delete, values, empty)
 data Operation
   = Create Int
   | Update Int Int
+  | Move Int Int
+  | ReverseAtTailBeforeCreate Int Int
   | Remove Int
 
 type Effector e = Operation -> Eff e Unit
@@ -76,13 +78,15 @@ operateStandardBehavior = do
         modify $ backPrevEnd >>> backNextEnd
         operateStandardBehavior
 
-      Just ps, _, _, Just ne | isSameKey ps ne -> do
-        liftEff $ state.effector $ Update state.prevStartIdx state.nextEndIdx
-        modify $ forwardPrevStart >>> backNextEnd
-        operateStandardBehavior
+      Just ps, _, _, Just ne | isSameKey ps ne ->
+        let operation = if length state.prev < length state.next then ReverseAtTailBeforeCreate else Move
+         in do
+            liftEff $ state.effector $ operation state.prevStartIdx state.nextEndIdx
+            modify $ forwardPrevStart >>> backNextEnd
+            operateStandardBehavior
 
       _, Just pe, Just ns, _ | isSameKey pe ns -> do
-        liftEff $ state.effector $ Update state.prevEndIdx state.nextStartIdx
+        liftEff $ state.effector $ Move state.prevEndIdx state.nextStartIdx
         modify $ backPrevEnd >>> forwardNextStart
         operateStandardBehavior
 
@@ -100,7 +104,7 @@ operateCreationAndMovement = do
       case pStartIdx of
         Nothing -> liftEff $ state.effector $ Create state.nextStartIdx
         Just idx -> do
-          liftEff $ state.effector $ Update idx state.nextStartIdx
+          liftEff $ state.effector $ Move idx state.nextStartIdx
           modify \s -> s { prevKeyIdx = delete (getKey ns) s.prevKeyIdx }
     modify forwardNextStart
     operateCreationAndMovement
