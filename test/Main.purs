@@ -4,7 +4,7 @@ import Prelude
 
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Ref (REF, Ref, modifyRef, newRef, readRef)
-import Data.Array ((!!), insertAt, delete, length, snoc)
+import Data.Array ((!!), insertAt, delete, snoc)
 import Data.Maybe (Maybe(..), fromMaybe)
 import KeyBasedDiff (Effector, Operation(..), operateDiff)
 import Test.Assert (ASSERT, assert)
@@ -42,38 +42,19 @@ testList prev next = do
 
 
 
-operate :: forall e. Ref (Array Int) -> Array Int -> Array Int -> Effector (ref :: REF | e)
+operate :: forall e. Ref (Array Int) -> Array Int -> Array Int -> Effector (ref :: REF | e) Int
 operate origin prev next = \operation ->
   case operation of
-    Create idx ->
-      case next !! idx of
-        Just item ->
-          modifyRef origin \l -> fromMaybe [] $ insertAt idx item l
-        _ -> pure unit
+    Create item idx ->
+      modifyRef origin \l -> fromMaybe [] $ insertAt idx item l
 
-    Move prevIdx nextIdx ->
-      case prev !! prevIdx, next !! nextIdx of
-        Just prevItem, Just nextItem -> do
-          modifyRef origin $ delete prevItem
-          currentList <- readRef origin
-          modifyRef origin \l ->
-            case insertAt nextIdx nextItem l of
-              Just l' -> l'
-              Nothing -> snoc l nextItem
-
-        _, _ -> pure unit
-
-    ReverseAtTailBeforeCreate prevIdx nextIdx ->
-      case prev !! prevIdx, next !! nextIdx of
-        Just prevItem, Just nextItem -> do
-          modifyRef origin $ delete prevItem
-          currentList <- readRef origin
-          modifyRef origin \l ->
-            case insertAt (nextIdx - (length next - length prev)) nextItem l of
-              Just l' -> l'
-              Nothing -> snoc l nextItem
-
-        _, _ -> pure unit
+    Move prevItem nextItem _ nextIdx -> do
+      modifyRef origin $ delete prevItem
+      currentList <- readRef origin
+      modifyRef origin \l ->
+        case insertAt nextIdx nextItem l of
+          Just l' -> l'
+          Nothing -> snoc l nextItem
 
     Remove idx ->
       case prev !! idx of

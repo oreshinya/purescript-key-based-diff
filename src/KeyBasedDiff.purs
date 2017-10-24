@@ -17,19 +17,18 @@ import Data.StrMap (StrMap, insert, lookup, delete, values, empty)
 
 
 
-data Operation
-  = Create Int
-  | Update Int Int
-  | Move Int Int
-  | ReverseAtTailBeforeCreate Int Int
+data Operation a
+  = Create a Int
+  | Update a a Int
+  | Move a a Int Int
   | Remove Int
 
-type Effector e = Operation -> Eff e Unit
+type Effector e a = Operation a -> Eff e Unit
 
 type InternalState e a =
   { prev :: Array a
   , next :: Array a
-  , effector :: Effector e
+  , effector :: Effector e a
   , prevStartIdx :: Int
   , prevEndIdx :: Int
   , nextStartIdx :: Int
@@ -39,7 +38,7 @@ type InternalState e a =
 
 
 
-operateDiff :: forall e a. HasKey a => Array a -> Array a -> Effector e -> Eff e Unit
+operateDiff :: forall e a. HasKey a => Array a -> Array a -> Effector e a -> Eff e Unit
 operateDiff prev next effector =
   let state =
         { prev
@@ -69,24 +68,27 @@ operateStandardBehavior = do
     nEnd <- gets \s -> s.next !! s.nextEndIdx
     case pStart, pEnd, nStart, nEnd of
       Just ps, _, Just ns, _ | isSameKey ps ns -> do
-        liftEff $ state.effector $ Update state.prevStartIdx state.nextStartIdx
+        liftEff $ state.effector $ Update ps ns state.prevStartIdx
         modify $ forwardPrevStart >>> forwardNextStart
         operateStandardBehavior
 
       _, Just pe, _, Just ne | isSameKey pe ne -> do
-        liftEff $ state.effector $ Update state.prevEndIdx state.nextEndIdx
+        liftEff $ state.effector $ Update pe ne state.prevEndIdx
         modify $ backPrevEnd >>> backNextEnd
         operateStandardBehavior
 
       Just ps, _, _, Just ne | isSameKey ps ne ->
-        let operation = if length state.prev < length state.next then ReverseAtTailBeforeCreate else Move
+        let nextIdx =
+              if length state.prev < length state.next
+                then state.nextEndIdx - (length state.next - length state.prev)
+                else state.nextEndIdx
          in do
-            liftEff $ state.effector $ operation state.prevStartIdx state.nextEndIdx
+            liftEff $ state.effector $ Move ps ne state.prevStartIdx nextIdx
             modify $ forwardPrevStart >>> backNextEnd
             operateStandardBehavior
 
       _, Just pe, Just ns, _ | isSameKey pe ns -> do
-        liftEff $ state.effector $ Move state.prevEndIdx state.nextStartIdx
+        liftEff $ state.effector $ Move pe ns state.prevEndIdx state.nextStartIdx
         modify $ backPrevEnd >>> forwardNextStart
         operateStandardBehavior
 
@@ -102,9 +104,10 @@ operateCreationAndMovement = do
     flip (maybe $ pure unit) nStart \ns -> do
       pStartIdx <- gets $ _.prevKeyIdx >>> (lookup $ getKey ns)
       case pStartIdx of
-        Nothing -> liftEff $ state.effector $ Create state.nextStartIdx
+        Nothing -> liftEff $ state.effector $ Create ns state.nextStartIdx
         Just idx -> do
-          liftEff $ state.effector $ Move idx state.nextStartIdx
+          liftEff $ flip (maybe $ pure unit) (state.prev !! idx) \ps ->
+            state.effector $ Move ps ns idx state.nextStartIdx
           modify \s -> s { prevKeyIdx = delete (getKey ns) s.prevKeyIdx }
     modify forwardNextStart
     operateCreationAndMovement
