@@ -8,12 +8,12 @@ module KeyBasedDiff
 import Prelude
 
 import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.Class (liftEff)
-import Control.Monad.State.Trans (StateT, get, gets, modify, evalStateT)
+import Control.Monad.Rec.Class (Step(..), tailRecM)
+import Control.Safely (traverse_)
 import Data.Array ((!!), length)
-import Data.Foldable (traverse_)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromJust)
 import Data.StrMap (StrMap, insert, lookup, delete, values, empty)
+import Partial.Unsafe (unsafePartial)
 
 
 
@@ -25,7 +25,7 @@ data Operation a
 
 type Effector e a = Operation a -> Eff e Unit
 
-type InternalState e a =
+type Acc e a =
   { prev :: Array a
   , next :: Array a
   , effector :: Effector e a
@@ -40,130 +40,112 @@ type InternalState e a =
 
 operateDiff :: forall e a. HasKey a => Array a -> Array a -> Effector e a -> Eff e Unit
 operateDiff prev next effector =
-  let state =
-        { prev
-        , next
-        , effector
-        , prevStartIdx : 0
-        , prevEndIdx : length prev - 1
-        , nextStartIdx : 0
-        , nextEndIdx : length next - 1
-        , prevKeyIdx : empty
-        }
-   in flip evalStateT state do
-      operateStandardBehavior
-      modify initPrevKeyIdx
-      operateCreationAndMovement
-      operateRemovement
+  operateRemovement =<< operateCreationAndMovement =<< initPrevKeyIdx <$> operateStandardBehavior
+    { prev
+    , next
+    , effector
+    , prevStartIdx : 0
+    , prevEndIdx : length prev - 1
+    , nextStartIdx : 0
+    , nextEndIdx : length next - 1
+    , prevKeyIdx : empty
+    }
 
 
 
-operateStandardBehavior :: forall e a. HasKey a => StateT (InternalState e a) (Eff e) Unit
-operateStandardBehavior = do
-  state <- get
-  when (isntFinishedAny state) do
-    pStart <- gets \s -> s.prev !! s.prevStartIdx
-    pEnd <- gets \s -> s.prev !! s.prevEndIdx
-    nStart <- gets \s -> s.next !! s.nextStartIdx
-    nEnd <- gets \s -> s.next !! s.nextEndIdx
-    case pStart, pEnd, nStart, nEnd of
-      Just ps, _, Just ns, _ | isSameKey ps ns -> do
-        liftEff $ state.effector $ Update ps ns state.prevStartIdx
-        modify $ forwardPrevStart >>> forwardNextStart
-        operateStandardBehavior
-
-      _, Just pe, _, Just ne | isSameKey pe ne -> do
-        liftEff $ state.effector $ Update pe ne state.prevEndIdx
-        modify $ backPrevEnd >>> backNextEnd
-        operateStandardBehavior
-
-      Just ps, _, _, Just ne | isSameKey ps ne ->
-        let nextIdx =
-              if length state.prev < length state.next
-                then state.nextEndIdx - (length state.next - length state.prev)
-                else state.nextEndIdx
-         in do
-            liftEff $ state.effector $ Move ps ne state.prevStartIdx nextIdx
-            modify $ forwardPrevStart >>> backNextEnd
-            operateStandardBehavior
-
-      _, Just pe, Just ns, _ | isSameKey pe ns -> do
-        liftEff $ state.effector $ Move pe ns state.prevEndIdx state.nextStartIdx
-        modify $ backPrevEnd >>> forwardNextStart
-        operateStandardBehavior
-
-      _, _, _, _ -> pure unit
+operateStandardBehavior :: forall e a. HasKey a => Acc e a -> Eff e (Acc e a)
+operateStandardBehavior accum = tailRecM go accum
+  where
+    go acc
+      | isFinishedPrev acc || isFinishedNext acc = pure $ Done acc
+      | otherwise =
+          let pStart = acc.prev !! acc.prevStartIdx
+              pEnd = acc.prev !! acc.prevEndIdx
+              nStart = acc.next !! acc.nextStartIdx
+              nEnd = acc.next !! acc.nextEndIdx
+           in case pStart, pEnd, nStart, nEnd of
+                Just ps, _, Just ns, _ | isSameKey ps ns -> do
+                  acc.effector $ Update ps ns acc.prevStartIdx
+                  pure $ Loop $ forwardPrevStart >>> forwardNextStart $ acc
+                _, Just pe, _, Just ne | isSameKey pe ne -> do
+                  acc.effector $ Update pe ne acc.prevEndIdx
+                  pure $ Loop $ backPrevEnd >>> backNextEnd $ acc
+                Just ps, _, _, Just ne | isSameKey ps ne ->
+                  let nextIdx =
+                        if length acc.prev < length acc.next
+                          then acc.nextEndIdx - (length acc.next - length acc.prev)
+                          else acc.nextEndIdx
+                   in do
+                      acc.effector $ Move ps ne acc.prevStartIdx nextIdx
+                      pure $ Loop $ forwardPrevStart >>> backNextEnd $ acc
+                _, Just pe, Just ns, _ | isSameKey pe ns -> do
+                  acc.effector $ Move pe ns acc.prevEndIdx acc.nextStartIdx
+                  pure $ Loop $ backPrevEnd >>> forwardNextStart $ acc
+                _, _, _, _ -> pure $ Done acc
 
 
 
-operateCreationAndMovement :: forall e a. HasKey a => StateT (InternalState e a) (Eff e) Unit
-operateCreationAndMovement = do
-  state <- get
-  when (isntFinishedNext state) do
-    nStart <- gets \s -> s.next !! s.nextStartIdx
-    flip (maybe $ pure unit) nStart \ns -> do
-      pStartIdx <- gets $ _.prevKeyIdx >>> (lookup $ getKey ns)
-      case pStartIdx of
-        Nothing -> liftEff $ state.effector $ Create ns state.nextStartIdx
-        Just idx -> do
-          liftEff $ flip (maybe $ pure unit) (state.prev !! idx) \ps ->
-            state.effector $ Move ps ns idx state.nextStartIdx
-          modify \s -> s { prevKeyIdx = delete (getKey ns) s.prevKeyIdx }
-    modify forwardNextStart
-    operateCreationAndMovement
+operateCreationAndMovement :: forall e a. HasKey a => Acc e a -> Eff e (Acc e a)
+operateCreationAndMovement accum = tailRecM go accum
+  where
+    go acc
+      | isFinishedNext acc = pure $ Done acc
+      | otherwise =
+          let nStart = unsafePartial $ fromJust $ acc.next !! acc.nextStartIdx
+              pStartIdx = lookup (getKey nStart) acc.prevKeyIdx
+           in Loop <<< forwardNextStart <$> case pStartIdx of
+                Nothing -> do
+                  acc.effector $ Create nStart acc.nextStartIdx
+                  pure acc
+                Just idx ->
+                  let pStart = unsafePartial $ fromJust $ acc.prev !! idx
+                   in do
+                     acc.effector $ Move pStart nStart idx acc.nextStartIdx
+                     pure $ acc { prevKeyIdx = delete (getKey nStart) acc.prevKeyIdx }
 
 
 
-operateRemovement :: forall e a. StateT (InternalState e a) (Eff e) Unit
-operateRemovement = do
-  state <- get
-  indexes <- gets $ _.prevKeyIdx >>> values
-  liftEff $ traverse_ (state.effector <<< Remove) indexes
+operateRemovement :: forall e a. HasKey a => Acc e a -> Eff e Unit
+operateRemovement acc = traverse_ (acc.effector <<< Remove) $ values acc.prevKeyIdx
 
 
 
-initPrevKeyIdx :: forall e a. HasKey a => InternalState e a -> InternalState e a
-initPrevKeyIdx state
-  | isntFinishedPrev state = initPrevKeyIdx <<< forwardPrevStart $
-    case state.prev !! state.prevStartIdx of
-      Nothing -> state
-      Just item -> state { prevKeyIdx = insert (getKey item) state.prevStartIdx state.prevKeyIdx }
-  | otherwise = state
+initPrevKeyIdx :: forall e a. HasKey a => Acc e a -> Acc e a
+initPrevKeyIdx acc
+  | isFinishedPrev acc = acc
+  | otherwise =
+      let pStart = unsafePartial $ fromJust $ acc.prev !! acc.prevStartIdx
+       in initPrevKeyIdx <<< forwardPrevStart $ acc { prevKeyIdx = insert (getKey pStart) acc.prevStartIdx acc.prevKeyIdx }
 
 
 
-isntFinishedAny :: forall e a. InternalState e a -> Boolean
-isntFinishedAny state = isntFinishedPrev state && isntFinishedNext state
+isFinishedPrev :: forall e a. Acc e a -> Boolean
+isFinishedPrev acc = acc.prevStartIdx > acc.prevEndIdx
 
 
 
-isntFinishedPrev :: forall e a. InternalState e a -> Boolean
-isntFinishedPrev state = state.prevStartIdx <= state.prevEndIdx
+isFinishedNext :: forall e a. Acc e a -> Boolean
+isFinishedNext acc = acc.nextStartIdx > acc.nextEndIdx
 
 
 
-isntFinishedNext :: forall e a. InternalState e a -> Boolean
-isntFinishedNext state = state.nextStartIdx <= state.nextEndIdx
+forwardPrevStart :: forall e a. Acc e a -> Acc e a
+forwardPrevStart acc = acc { prevStartIdx = acc.prevStartIdx + 1 }
 
 
 
-forwardPrevStart :: forall e a. InternalState e a -> InternalState e a
-forwardPrevStart state = state { prevStartIdx = state.prevStartIdx + 1 }
+forwardNextStart :: forall e a. Acc e a -> Acc e a
+forwardNextStart acc = acc { nextStartIdx = acc.nextStartIdx + 1 }
 
 
 
-forwardNextStart :: forall e a. InternalState e a -> InternalState e a
-forwardNextStart state = state { nextStartIdx = state.nextStartIdx + 1 }
+backPrevEnd :: forall e a. Acc e a -> Acc e a
+backPrevEnd acc = acc { prevEndIdx = acc.prevEndIdx - 1 }
 
 
 
-backPrevEnd :: forall e a. InternalState e a -> InternalState e a
-backPrevEnd state = state { prevEndIdx = state.prevEndIdx - 1 }
-
-
-
-backNextEnd :: forall e a. InternalState e a -> InternalState e a
-backNextEnd state = state { nextEndIdx = state.nextEndIdx - 1 }
+backNextEnd :: forall e a. Acc e a -> Acc e a
+backNextEnd acc = acc { nextEndIdx = acc.nextEndIdx - 1 }
 
 
 
