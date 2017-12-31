@@ -40,16 +40,21 @@ type Acc e a =
 
 operateDiff :: forall e a. HasKey a => Array a -> Array a -> Effector e a -> Eff e Unit
 operateDiff prev next effector =
-  operateRemovement =<< operateCreationAndMovement =<< initPrevKeyIdx <$> operateStandardBehavior
-    { prev
-    , next
-    , effector
-    , prevStartIdx : 0
-    , prevEndIdx : length prev - 1
-    , nextStartIdx : 0
-    , nextEndIdx : length next - 1
-    , prevKeyIdx : empty
-    }
+  let acc =
+        { prev
+        , next
+        , effector
+        , prevStartIdx : 0
+        , prevEndIdx : length prev - 1
+        , nextStartIdx : 0
+        , nextEndIdx : length next - 1
+        , prevKeyIdx : empty
+        }
+   in do
+      acc' <- operateStandardBehavior acc
+      if isFinishedNext acc'
+        then operateRemovement acc'
+        else pure (initPrevKeyIdx acc') >>= operateCreationAndMovement >>= operateRemovementFromKeyIdx
 
 
 
@@ -85,6 +90,17 @@ operateStandardBehavior accum = tailRecM go accum
 
 
 
+operateRemovement :: forall e a. HasKey a => Acc e a -> Eff e Unit
+operateRemovement accum = tailRecM go accum
+  where
+    go acc
+      | isFinishedPrev acc = pure $ Done unit
+      | otherwise = do
+          acc.effector $ Remove acc.prevStartIdx
+          pure $ Loop $ forwardPrevStart acc
+
+
+
 operateCreationAndMovement :: forall e a. HasKey a => Acc e a -> Eff e (Acc e a)
 operateCreationAndMovement accum = tailRecM go accum
   where
@@ -105,8 +121,8 @@ operateCreationAndMovement accum = tailRecM go accum
 
 
 
-operateRemovement :: forall e a. HasKey a => Acc e a -> Eff e Unit
-operateRemovement acc = traverse_ (acc.effector <<< Remove) $ values acc.prevKeyIdx
+operateRemovementFromKeyIdx :: forall e a. HasKey a => Acc e a -> Eff e Unit
+operateRemovementFromKeyIdx acc = traverse_ (acc.effector <<< Remove) $ values acc.prevKeyIdx
 
 
 
