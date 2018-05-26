@@ -2,6 +2,8 @@
 
 [![Latest release](http://img.shields.io/github/release/oreshinya/purescript-key-based-diff.svg)](https://github.com/oreshinya/purescript-key-based-diff/releases)
 
+**[OBSOLETED] No longer maintenance.**
+
 A list diff algorightm with key for virtual dom reconciliation.
 
 ## Installation
